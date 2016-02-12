@@ -15,7 +15,7 @@
   "repository": "https://github.com/mWater/offline-leaflet-map",
   "author": "Mathieu Briau",
   "license": "GPLv3",
-  "devDependencies": {
+  "dependencies": {
     "browserify": "^3.40.0",
     "chai": "^1.9.1",
     "coffee-script": "^1.7.1",
@@ -28,9 +28,7 @@
     "gulp-util": "^2.2.16",
     "testem": "^0.6.16",
     "vinyl-buffer": "0.0.0",
-    "vinyl-source-stream": "^0.1.1"
-  },
-  "dependencies": {
+    "vinyl-source-stream": "^0.1.1",
     "async": "^0.9.0",
     "idb-wrapper": "^1.4.1"
   }
