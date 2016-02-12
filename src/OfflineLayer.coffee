@@ -134,13 +134,13 @@ module.exports = class OfflineLayer extends L.TileLayer
     )
 
   # calculateNbTiles includes potentially already saved tiles.
-  calculateNbTiles: (zoomLevelLimit) ->
+  calculateNbTiles: (zoomLevelLimit, tileLimit) ->
     if @_map.getZoom() < @_minZoomLevel
       @_reportError("ZOOM_LEVEL_TOO_LOW")
       return -1
 
     count = 0
-    tileImagesToQuery = @_getTileImages(zoomLevelLimit)
+    tileImagesToQuery = @_getTileImages(zoomLevelLimit, {remaining: tileLimit} if tileLimit)
     for key of tileImagesToQuery
       count++
     return count
@@ -153,7 +153,7 @@ module.exports = class OfflineLayer extends L.TileLayer
   # Returns the tiles currently displayed
   # @_tiles could return tiles that are currently loaded but not displayed
   # that is why the tiles are recalculated here.
-  _getTileImages: (zoomLevelLimit) ->
+  _getTileImages: (zoomLevelLimit, tileLimit) ->
     zoomLevelLimit = zoomLevelLimit || @_map.getMaxZoom()
 
     tileImagesToQuery = {}
@@ -186,18 +186,20 @@ module.exports = class OfflineLayer extends L.TileLayer
     minX = tileBounds.min.x
     maxX = tileBounds.max.x
 
+    if tileLimit
+      tileLimit.remaining -= tilesInScreen.length
     arrayLength = tilesInScreen.length
     for i in [0 ... arrayLength]
       point = tilesInScreen[i]
       x = point.x
       y = point.y
-      @_getZoomedInTiles(x, y, startingZoom, zoomLevelLimit, tileImagesToQuery, minY, maxY, minX, maxX)
-      @_getZoomedOutTiles(x, y, startingZoom, 0, tileImagesToQuery, minY, maxY, minX, maxX)
+      @_getZoomedInTiles(x, y, startingZoom, zoomLevelLimit, tileImagesToQuery, minY, maxY, minX, maxX, tileLimit)
+      @_getZoomedOutTiles(x, y, startingZoom, 0, tileImagesToQuery, minY, maxY, minX, maxX, tileLimit)
 
     return tileImagesToQuery
 
   # saves the tiles currently on screen + lower and higher zoom levels.
-  saveTiles: (zoomLevelLimit, onStarted, onSuccess, onError) ->
+  saveTiles: (zoomLevelLimit, tileLimit, onStarted, onSuccess, onError) ->
     @_alreadyReportedErrorForThisActions = false
 
     if(!@_tileImagesStore)
@@ -216,41 +218,41 @@ module.exports = class OfflineLayer extends L.TileLayer
       return
 
     #lock UI
-    tileImagesToQuery = @_getTileImages(zoomLevelLimit)
+    tileImagesToQuery = @_getTileImages(zoomLevelLimit, {remaining: tileLimit} if tileLimit)
     @_tileImagesStore.saveImages(tileImagesToQuery, onStarted, onSuccess, (error) =>
       @_reportError("SAVING_TILES", error)
       onError(error)
     )
 
   # returns all the tiles with higher zoom levels
-  _getZoomedInTiles: (x, y, currentZ, maxZ, tileImagesToQuery, minY, maxY, minX, maxX) ->
-    @_getTileImage(x, y, currentZ, tileImagesToQuery, minY, maxY, minX, maxX, true)
+  _getZoomedInTiles: (x, y, currentZ, maxZ, tileImagesToQuery, minY, maxY, minX, maxX, tileLimit) ->
+    @_getTileImage(x, y, currentZ, tileImagesToQuery, minY, maxY, minX, maxX, true, tileLimit)
 
-    if currentZ < maxZ
+    if currentZ < maxZ and !(tileLimit and tileLimit.remaining <= 0)
       # getting the 4 tile under the current tile
       minY *= 2
       maxY *= 2
       minX *= 2
       maxX *= 2
-      @_getZoomedInTiles(x * 2, y * 2, currentZ + 1, maxZ, tileImagesToQuery, minY, maxY, minX, maxX)
-      @_getZoomedInTiles(x * 2 + 1, y * 2, currentZ + 1, maxZ, tileImagesToQuery, minY, maxY, minX, maxX)
-      @_getZoomedInTiles(x * 2, y * 2 + 1, currentZ + 1, maxZ, tileImagesToQuery, minY, maxY, minX, maxX)
-      @_getZoomedInTiles(x * 2 + 1, y * 2 + 1, currentZ + 1, maxZ, tileImagesToQuery, minY, maxY, minX, maxX)
+      @_getZoomedInTiles(x * 2, y * 2, currentZ + 1, maxZ, tileImagesToQuery, minY, maxY, minX, maxX, tileLimit)
+      @_getZoomedInTiles(x * 2 + 1, y * 2, currentZ + 1, maxZ, tileImagesToQuery, minY, maxY, minX, maxX, tileLimit)
+      @_getZoomedInTiles(x * 2, y * 2 + 1, currentZ + 1, maxZ, tileImagesToQuery, minY, maxY, minX, maxX, tileLimit)
+      @_getZoomedInTiles(x * 2 + 1, y * 2 + 1, currentZ + 1, maxZ, tileImagesToQuery, minY, maxY, minX, maxX, tileLimit)
 
   # returns all the tiles with lower zoom levels
-  _getZoomedOutTiles: (x, y, currentZ, finalZ, tileImagesToQuery, minY, maxY, minX, maxX) ->
-    @_getTileImage(x, y, currentZ, tileImagesToQuery, minY, maxY, minX, maxX, false)
+  _getZoomedOutTiles: (x, y, currentZ, finalZ, tileImagesToQuery, minY, maxY, minX, maxX, tileLimit) ->
+    @_getTileImage(x, y, currentZ, tileImagesToQuery, minY, maxY, minX, maxX, false, tileLimit)
 
-    if currentZ > finalZ
+    if currentZ > finalZ and !(tileLimit and tileLimit.remaining <= 0)
       minY /= 2
       maxY /= 2
       minX /= 2
       maxX /= 2
       # getting the zoomed out tile containing this tile
       @_getZoomedOutTiles(Math.floor(x / 2), Math.floor(y / 2), currentZ - 1, finalZ, tileImagesToQuery,
-        minY, maxY, minX, maxX)
+        minY, maxY, minX, maxX, tileLimit)
 
-  _getTileImage: (x, y, z, tileImagesToQuery, minY, maxY, minX, maxX) ->
+  _getTileImage: (x, y, z, tileImagesToQuery, minY, maxY, minX, maxX, flag, tileLimit) ->
     # is the tile outside the bounds?
     if x < Math.floor(minX) or x > Math.floor(maxX) or y < Math.floor(minY) or y > Math.floor(maxY)
       return
@@ -260,6 +262,8 @@ module.exports = class OfflineLayer extends L.TileLayer
     key = @_createTileKey(x, y, z)
     if(!tileImagesToQuery[key])
       tileImagesToQuery[key] = {key:key, x: x, y: y, z: z}
+      if tileLimit
+        tileLimit.remaining--
 
   _createNormalizedTilePoint: (x, y, z) ->
     nbTilesAtZoomLevel = Math.pow(2, z)
