@@ -44,9 +44,6 @@
     };
 
     var _each = function (arr, iterator) {
-        if (arr.forEach) {
-            return arr.forEach(iterator);
-        }
         for (var i = 0; i < arr.length; i += 1) {
             iterator(arr[i], i, arr);
         }
@@ -823,23 +820,26 @@
             pause: function () {
                 if (q.paused === true) { return; }
                 q.paused = true;
-                q.process();
             },
             resume: function () {
                 if (q.paused === false) { return; }
                 q.paused = false;
-                q.process();
+                // Need to call q.process once per concurrent
+                // worker to preserve full concurrency after pause
+                for (var w = 1; w <= q.concurrency; w++) {
+                    async.setImmediate(q.process);
+                }
             }
         };
         return q;
     };
-    
+
     async.priorityQueue = function (worker, concurrency) {
-        
+
         function _compareTasks(a, b){
           return a.priority - b.priority;
         };
-        
+
         function _binarySearch(sequence, item, compare) {
           var beg = -1,
               end = sequence.length - 1;
@@ -853,7 +853,7 @@
           }
           return beg;
         }
-        
+
         function _insert(q, data, priority, callback) {
           if (!q.started){
             q.started = true;
@@ -875,7 +875,7 @@
                   priority: priority,
                   callback: typeof callback === 'function' ? callback : null
               };
-              
+
               q.tasks.splice(_binarySearch(q.tasks, item, _compareTasks) + 1, 0, item);
 
               if (q.saturated && q.tasks.length === q.concurrency) {
@@ -884,15 +884,15 @@
               async.setImmediate(q.process);
           });
         }
-        
+
         // Start with a normal queue
         var q = async.queue(worker, concurrency);
-        
+
         // Override push to accept second parameter representing priority
         q.push = function (data, priority, callback) {
           _insert(q, data, priority, callback);
         };
-        
+
         // Remove unshift function
         delete q.unshift;
 
@@ -1124,8 +1124,8 @@
 
 }());
 
-}).call(this,require("/home/clayton/dev/mWater/offline-leaflet-map/node_modules/browserify/node_modules/insert-module-globals/node_modules/process/browser.js"))
-},{"/home/clayton/dev/mWater/offline-leaflet-map/node_modules/browserify/node_modules/insert-module-globals/node_modules/process/browser.js":2}],2:[function(require,module,exports){
+}).call(this,require("+xKvab"))
+},{"+xKvab":2}],2:[function(require,module,exports){
 // shim for using process in browser
 
 var process = module.exports = {};
@@ -1173,8 +1173,11 @@ process.argv = [];
 function noop() {}
 
 process.on = noop;
+process.addListener = noop;
 process.once = noop;
 process.off = noop;
+process.removeListener = noop;
+process.removeAllListeners = noop;
 process.emit = noop;
 
 process.binding = function (name) {
@@ -1192,7 +1195,8 @@ process.chdir = function (dir) {
 
 /**
  * @license IDBWrapper - A cross-browser wrapper for IndexedDB
- * Copyright (c) 2011 - 2013 Jens Arps
+ * Version 1.6.1
+ * Copyright (c) 2011 - 2015 Jens Arps
  * http://jensarps.de/
  *
  * Licensed under the MIT (X11) license
@@ -1213,6 +1217,7 @@ process.chdir = function (dir) {
   var defaultErrorHandler = function (error) {
     throw error;
   };
+  var defaultSuccessHandler = function () {};
 
   var defaults = {
     storeName: 'Store',
@@ -1223,7 +1228,13 @@ process.chdir = function (dir) {
     onStoreReady: function () {
     },
     onError: defaultErrorHandler,
-    indexes: []
+    indexes: [],
+    implementationPreference: [
+      'indexedDB',
+      'webkitIndexedDB',
+      'mozIndexedDB',
+      'shimIndexedDB'
+    ]
   };
 
   /**
@@ -1232,7 +1243,7 @@ process.chdir = function (dir) {
    *
    * @constructor
    * @name IDBStore
-   * @version 1.4.1
+   * @version 1.6.1
    *
    * @param {Object} [kwArgs] An options object used to configure the store and
    *  set callbacks
@@ -1261,6 +1272,7 @@ process.chdir = function (dir) {
    * @param {String} [kwArgs.indexes.indexData.keyPath] The key path of the index
    * @param {Boolean} [kwArgs.indexes.indexData.unique] Whether the index is unique
    * @param {Boolean} [kwArgs.indexes.indexData.multiEntry] Whether the index is multi entry
+   * @param {Array} [kwArgs.implementationPreference=['indexedDB','webkitIndexedDB','mozIndexedDB','shimIndexedDB']] An array of strings naming implementations to be used, in order or preference
    * @param {Function} [onStoreReady] A callback to be called when the store
    * is ready to be used.
    * @example
@@ -1304,12 +1316,12 @@ process.chdir = function (dir) {
     onStoreReady && (this.onStoreReady = onStoreReady);
 
     var env = typeof window == 'object' ? window : self;
-    this.idb = env.indexedDB || env.webkitIndexedDB || env.mozIndexedDB;
+    var availableImplementations = this.implementationPreference.filter(function (implName) {
+      return implName in env;
+    });
+    this.implementation = availableImplementations[0];
+    this.idb = env[this.implementation];
     this.keyRange = env.IDBKeyRange || env.webkitIDBKeyRange || env.mozIDBKeyRange;
-
-    this.features = {
-      hasAutoIncrement: !env.mozIndexedDB
-    };
 
     this.consts = {
       'READ_ONLY':         'readonly',
@@ -1329,21 +1341,22 @@ process.chdir = function (dir) {
     /**
      * A pointer to the IDBStore ctor
      *
-     * @type IDBStore
+     * @private
+     * @type {Function}
      */
     constructor: IDBStore,
 
     /**
      * The version of IDBStore
      *
-     * @type String
+     * @type {String}
      */
-    version: '1.4.1',
+    version: '1.6.1',
 
     /**
      * A reference to the IndexedDB object
      *
-     * @type Object
+     * @type {Object}
      */
     db: null,
 
@@ -1351,65 +1364,77 @@ process.chdir = function (dir) {
      * The full name of the IndexedDB used by IDBStore, composed of
      * this.storePrefix + this.storeName
      *
-     * @type String
+     * @type {String}
      */
     dbName: null,
 
     /**
      * The version of the IndexedDB used by IDBStore
      *
-     * @type Number
+     * @type {Number}
      */
     dbVersion: null,
 
     /**
      * A reference to the objectStore used by IDBStore
      *
-     * @type Object
+     * @type {Object}
      */
     store: null,
 
     /**
      * The store name
      *
-     * @type String
+     * @type {String}
      */
     storeName: null,
 
     /**
+     * The prefix to prepend to the store name
+     *
+     * @type {String}
+     */
+    storePrefix: null,
+
+    /**
      * The key path
      *
-     * @type String
+     * @type {String}
      */
     keyPath: null,
 
     /**
      * Whether IDBStore uses autoIncrement
      *
-     * @type Boolean
+     * @type {Boolean}
      */
     autoIncrement: null,
 
     /**
      * The indexes used by IDBStore
      *
-     * @type Array
+     * @type {Array}
      */
     indexes: null,
 
     /**
-     * A hashmap of features of the used IDB implementation
+     * The implemantations to try to use, in order of preference
      *
-     * @type Object
-     * @proprty {Boolean} autoIncrement If the implementation supports
-     *  native auto increment
+     * @type {Array}
      */
-    features: null,
+    implementationPreference: null,
+
+    /**
+     * The actual implementation being used
+     *
+     * @type {String}
+     */
+    implementation: '',
 
     /**
      * The callback to be called when the store is ready to be used
      *
-     * @type Function
+     * @type {Function}
      */
     onStoreReady: null,
 
@@ -1417,14 +1442,14 @@ process.chdir = function (dir) {
      * The callback to be called if an error occurred during instantiation
      * of the store
      *
-     * @type Function
+     * @type {Function}
      */
     onError: null,
 
     /**
      * The internal insertID counter
      *
-     * @type Number
+     * @type {Number}
      * @private
      */
     _insertIdCount: 0,
@@ -1483,7 +1508,7 @@ process.chdir = function (dir) {
         if(!this.db.objectStoreNames.contains(this.storeName)){
           // We should never ever get here.
           // Lets notify the user anyway.
-          this.onError(new Error('Something is wrong with the IndexedDB implementation in this browser. Please upgrade your browser.'));
+          this.onError(new Error('Object store couldn\'t be created.'));
           return;
         }
 
@@ -1582,10 +1607,20 @@ process.chdir = function (dir) {
     /**
      * Deletes the database used for this store if the IDB implementations
      * provides that functionality.
+     *
+     * @param {Function} [onSuccess] A callback that is called if deletion
+     *  was successful.
+     * @param {Function} [onError] A callback that is called if deletion
+     *  failed.
      */
-    deleteDatabase: function () {
+    deleteDatabase: function (onSuccess, onError) {
       if (this.idb.deleteDatabase) {
-        this.idb.deleteDatabase(this.dbName);
+        this.db.close();
+        var deleteRequest = this.idb.deleteDatabase(this.dbName);
+        deleteRequest.onsuccess = onSuccess;
+        deleteRequest.onerror = onError;
+      } else {
+        onError(new Error('Browser does not support IndexedDB deleteDatabase!'));
       }
     },
 
@@ -1632,7 +1667,7 @@ process.chdir = function (dir) {
         value = key;
       }
       onError || (onError = defaultErrorHandler);
-      onSuccess || (onSuccess = noop);
+      onSuccess || (onSuccess = defaultSuccessHandler);
 
       var hasSuccess = false,
           result = null,
@@ -1674,7 +1709,7 @@ process.chdir = function (dir) {
      */
     get: function (key, onSuccess, onError) {
       onError || (onError = defaultErrorHandler);
-      onSuccess || (onSuccess = noop);
+      onSuccess || (onSuccess = defaultSuccessHandler);
 
       var hasSuccess = false,
           result = null;
@@ -1708,7 +1743,7 @@ process.chdir = function (dir) {
      */
     remove: function (key, onSuccess, onError) {
       onError || (onError = defaultErrorHandler);
-      onSuccess || (onSuccess = noop);
+      onSuccess || (onSuccess = defaultSuccessHandler);
 
       var hasSuccess = false,
           result = null;
@@ -1744,10 +1779,12 @@ process.chdir = function (dir) {
      */
     batch: function (dataArray, onSuccess, onError) {
       onError || (onError = defaultErrorHandler);
-      onSuccess || (onSuccess = noop);
+      onSuccess || (onSuccess = defaultSuccessHandler);
 
       if(Object.prototype.toString.call(dataArray) != '[object Array]'){
         onError(new Error('dataArray argument must be of type Array.'));
+      } else if (dataArray.length === 0) {
+        return onSuccess(true);
       }
       var batchTransaction = this.db.transaction([this.storeName] , this.consts.READ_WRITE);
       batchTransaction.oncomplete = function () {
@@ -1818,6 +1855,93 @@ process.chdir = function (dir) {
       });
 
       return this.batch(batchData, onSuccess, onError);
+    },
+
+    /**
+     * Like putBatch, takes an array of objects and stores them in a single
+     * transaction, but allows processing of the result values.  Returns the
+     * processed records containing the key for newly created records to the
+     * onSuccess calllback instead of only returning true or false for success.
+     * In addition, added the option for the caller to specify a key field that
+     * should be set to the newly created key.
+     *
+     * @param {Array} dataArray An array of objects to store
+     * @param {Object} [options] An object containing optional options
+     * @param {String} [options.keyField=this.keyPath] Specifies a field in the record to update
+     *  with the auto-incrementing key. Defaults to the store's keyPath.
+     * @param {Function} [onSuccess] A callback that is called if all operations
+     *  were successful.
+     * @param {Function} [onError] A callback that is called if an error
+     *  occurred during one of the operations.
+     * @returns {IDBTransaction} The transaction used for this operation.
+     *
+     */
+    upsertBatch: function (dataArray, options, onSuccess, onError) {
+      // handle `dataArray, onSuccess, onError` signature
+      if (typeof options == 'function') {
+        onSuccess = options;
+        onError = onSuccess;
+        options = {};
+      }
+
+      onError || (onError = defaultErrorHandler);
+      onSuccess || (onSuccess = defaultSuccessHandler);
+      options || (options = {});
+
+      if (Object.prototype.toString.call(dataArray) != '[object Array]') {
+        onError(new Error('dataArray argument must be of type Array.'));
+      }
+      var batchTransaction = this.db.transaction([this.storeName], this.consts.READ_WRITE);
+      batchTransaction.oncomplete = function () {
+        if (hasSuccess) {
+          onSuccess(dataArray);
+        } else {
+          onError(false);
+        }
+      };
+      batchTransaction.onabort = onError;
+      batchTransaction.onerror = onError;
+
+      var keyField = options.keyField || this.keyPath;
+      var count = dataArray.length;
+      var called = false;
+      var hasSuccess = false;
+      var index = 0; // assume success callbacks are executed in order
+
+      var onItemSuccess = function (event) {
+        var record = dataArray[index++];
+        record[keyField] = event.target.result;
+
+        count--;
+        if (count === 0 && !called) {
+          called = true;
+          hasSuccess = true;
+        }
+      };
+
+      dataArray.forEach(function (record) {
+        var key = record.key;
+
+        var onItemError = function (err) {
+          batchTransaction.abort();
+          if (!called) {
+            called = true;
+            onError(err);
+          }
+        };
+
+        var putRequest;
+        if (this.keyPath !== null) { // in-line keys
+          this._addIdPropertyIfNeeded(record);
+          putRequest = batchTransaction.objectStore(this.storeName).put(record);
+        } else { // out-of-line keys
+          putRequest = batchTransaction.objectStore(this.storeName).put(record, key);
+        }
+        putRequest.onsuccess = onItemSuccess;
+        putRequest.onerror = onItemError;
+      }, this);
+
+      return batchTransaction;
     },
 
     /**
@@ -1898,11 +2022,13 @@ process.chdir = function (dir) {
      */
     getBatch: function (keyArray, onSuccess, onError, arrayType) {
       onError || (onError = defaultErrorHandler);
-      onSuccess || (onSuccess = noop);
+      onSuccess || (onSuccess = defaultSuccessHandler);
       arrayType || (arrayType = 'sparse');
 
-      if(Object.prototype.toString.call(keyArray) != '[object Array]'){
+      if (Object.prototype.toString.call(keyArray) != '[object Array]'){
         onError(new Error('keyArray argument must be of type Array.'));
+      } else if (keyArray.length === 0) {
+        return onSuccess([]);
       }
       var batchTransaction = this.db.transaction([this.storeName] , this.consts.READ_ONLY);
       batchTransaction.oncomplete = function () {
@@ -1961,7 +2087,7 @@ process.chdir = function (dir) {
      */
     getAll: function (onSuccess, onError) {
       onError || (onError = defaultErrorHandler);
-      onSuccess || (onSuccess = noop);
+      onSuccess || (onSuccess = defaultSuccessHandler);
       var getAllTransaction = this.db.transaction([this.storeName], this.consts.READ_ONLY);
       var store = getAllTransaction.objectStore(this.storeName);
       if (store.getAll) {
@@ -2054,7 +2180,7 @@ process.chdir = function (dir) {
      */
     clear: function (onSuccess, onError) {
       onError || (onError = defaultErrorHandler);
-      onSuccess || (onSuccess = noop);
+      onSuccess || (onSuccess = defaultSuccessHandler);
 
       var hasSuccess = false,
           result = null;
@@ -2085,7 +2211,7 @@ process.chdir = function (dir) {
      * @private
      */
     _addIdPropertyIfNeeded: function (dataObj) {
-      if (!this.features.hasAutoIncrement && typeof dataObj[this.keyPath] == 'undefined') {
+      if (typeof dataObj[this.keyPath] == 'undefined') {
         dataObj[this.keyPath] = this._insertIdCount++ + Date.now();
       }
     },
@@ -2200,6 +2326,10 @@ process.chdir = function (dir) {
      *  iteration has ended
      * @param {Function} [options.onError=throw] A callback to be called
      *  if an error occurred during the operation.
+     * @param {Number} [options.limit=Infinity] Limit the number of returned
+     *  results to this number
+     * @param {Number} [options.offset=0] Skip the provided number of results
+     *  in the resultset
      * @returns {IDBTransaction} The transaction used for this operation.
      */
     iterate: function (onItem, options) {
@@ -2211,7 +2341,9 @@ process.chdir = function (dir) {
         keyRange: null,
         writeAccess: false,
         onEnd: null,
-        onError: defaultErrorHandler
+        onError: defaultErrorHandler,
+        limit: Infinity,
+        offset: 0
       }, options || {});
 
       var directionType = options.order.toLowerCase() == 'desc' ? 'PREV' : 'NEXT';
@@ -2225,6 +2357,7 @@ process.chdir = function (dir) {
       if (options.index) {
         cursorTarget = cursorTarget.index(options.index);
       }
+      var recordCount = 0;
 
       cursorTransaction.oncomplete = function () {
         if (!hasSuccess) {
@@ -2245,9 +2378,19 @@ process.chdir = function (dir) {
       cursorRequest.onsuccess = function (event) {
         var cursor = event.target.result;
         if (cursor) {
-          onItem(cursor.value, cursor, cursorTransaction);
-          if (options.autoContinue) {
-            cursor['continue']();
+          if (options.offset) {
+            cursor.advance(options.offset);
+            options.offset = 0;
+          } else {
+            onItem(cursor.value, cursor, cursorTransaction);
+            recordCount++;
+            if (options.autoContinue) {
+              if (recordCount + options.offset < options.limit) {
+                cursor['continue']();
+              } else {
+                hasSuccess = true;
+              }
+            }
           }
         } else {
           hasSuccess = true;
@@ -2263,20 +2406,26 @@ process.chdir = function (dir) {
      *
      * @param {Function} onSuccess A callback to be called when the operation
      *  was successful.
-     * @param {Object} [options] An object defining specific query options
+     * @param {Object} [options] An object defining specific options
      * @param {Object} [options.index=null] An IDBIndex to operate on
      * @param {String} [options.order=ASC] The order in which to provide the
      *  results, can be 'DESC' or 'ASC'
      * @param {Boolean} [options.filterDuplicates=false] Whether to exclude
      *  duplicate matches
      * @param {Object} [options.keyRange=null] An IDBKeyRange to use
-     * @param {Function} [options.onError=throw] A callback to be called if an error
-     *  occurred during the operation.
+     * @param {Function} [options.onError=throw] A callback to be called
+     *  if an error occurred during the operation.
+     * @param {Number} [options.limit=Infinity] Limit the number of returned
+     *  results to this number
+     * @param {Number} [options.offset=0] Skip the provided number of results
+     *  in the resultset
      * @returns {IDBTransaction} The transaction used for this operation.
      */
     query: function (onSuccess, options) {
       var result = [];
       options = options || {};
+      options.autoContinue = true;
+      options.writeAccess = false;
       options.onEnd = function () {
         onSuccess(result);
       };
@@ -2386,9 +2535,6 @@ process.chdir = function (dir) {
   };
 
   /** helpers **/
-
-  var noop = function () {
-  };
   var empty = {};
   var mixin = function (target, source) {
     var name, s;
@@ -2885,14 +3031,16 @@ module.exports = OfflineLayer = (function(_super) {
     })(this));
   };
 
-  OfflineLayer.prototype.calculateNbTiles = function(zoomLevelLimit) {
+  OfflineLayer.prototype.calculateNbTiles = function(zoomLevelLimit, tileLimit) {
     var count, key, tileImagesToQuery;
     if (this._map.getZoom() < this._minZoomLevel) {
       this._reportError("ZOOM_LEVEL_TOO_LOW");
       return -1;
     }
     count = 0;
-    tileImagesToQuery = this._getTileImages(zoomLevelLimit);
+    tileImagesToQuery = this._getTileImages(zoomLevelLimit, tileLimit ? {
+      remaining: tileLimit
+    } : void 0);
     for (key in tileImagesToQuery) {
       count++;
     }
@@ -2906,7 +3054,7 @@ module.exports = OfflineLayer = (function(_super) {
     return false;
   };
 
-  OfflineLayer.prototype._getTileImages = function(zoomLevelLimit) {
+  OfflineLayer.prototype._getTileImages = function(zoomLevelLimit, tileLimit) {
     var arrayLength, bounds, i, j, map, maxX, maxY, minX, minY, point, roundedTileBounds, startingZoom, tileBounds, tileImagesToQuery, tileSize, tilesInScreen, x, y, _i, _j, _k, _ref, _ref1, _ref2, _ref3;
     zoomLevelLimit = zoomLevelLimit || this._map.getMaxZoom();
     tileImagesToQuery = {};
@@ -2926,18 +3074,21 @@ module.exports = OfflineLayer = (function(_super) {
     maxY = tileBounds.max.y;
     minX = tileBounds.min.x;
     maxX = tileBounds.max.x;
+    if (tileLimit) {
+      tileLimit.remaining -= tilesInScreen.length;
+    }
     arrayLength = tilesInScreen.length;
     for (i = _k = 0; 0 <= arrayLength ? _k < arrayLength : _k > arrayLength; i = 0 <= arrayLength ? ++_k : --_k) {
       point = tilesInScreen[i];
       x = point.x;
       y = point.y;
-      this._getZoomedInTiles(x, y, startingZoom, zoomLevelLimit, tileImagesToQuery, minY, maxY, minX, maxX);
-      this._getZoomedOutTiles(x, y, startingZoom, 0, tileImagesToQuery, minY, maxY, minX, maxX);
+      this._getZoomedInTiles(x, y, startingZoom, zoomLevelLimit, tileImagesToQuery, minY, maxY, minX, maxX, tileLimit);
+      this._getZoomedOutTiles(x, y, startingZoom, 0, tileImagesToQuery, minY, maxY, minX, maxX, tileLimit);
     }
     return tileImagesToQuery;
   };
 
-  OfflineLayer.prototype.saveTiles = function(zoomLevelLimit, onStarted, onSuccess, onError) {
+  OfflineLayer.prototype.saveTiles = function(zoomLevelLimit, tileLimit, onStarted, onSuccess, onError) {
     var tileImagesToQuery;
     this._alreadyReportedErrorForThisActions = false;
     if (!this._tileImagesStore) {
@@ -2955,7 +3106,9 @@ module.exports = OfflineLayer = (function(_super) {
       onError("ZOOM_LEVEL_TOO_LOW");
       return;
     }
-    tileImagesToQuery = this._getTileImages(zoomLevelLimit);
+    tileImagesToQuery = this._getTileImages(zoomLevelLimit, tileLimit ? {
+      remaining: tileLimit
+    } : void 0);
     return this._tileImagesStore.saveImages(tileImagesToQuery, onStarted, onSuccess, (function(_this) {
       return function(error) {
         _this._reportError("SAVING_TILES", error);
@@ -2964,44 +3117,47 @@ module.exports = OfflineLayer = (function(_super) {
     })(this));
   };
 
-  OfflineLayer.prototype._getZoomedInTiles = function(x, y, currentZ, maxZ, tileImagesToQuery, minY, maxY, minX, maxX) {
-    this._getTileImage(x, y, currentZ, tileImagesToQuery, minY, maxY, minX, maxX, true);
-    if (currentZ < maxZ) {
+  OfflineLayer.prototype._getZoomedInTiles = function(x, y, currentZ, maxZ, tileImagesToQuery, minY, maxY, minX, maxX, tileLimit) {
+    this._getTileImage(x, y, currentZ, tileImagesToQuery, minY, maxY, minX, maxX, true, tileLimit);
+    if (currentZ < maxZ && !(tileLimit && tileLimit.remaining <= 0)) {
       minY *= 2;
       maxY *= 2;
       minX *= 2;
       maxX *= 2;
-      this._getZoomedInTiles(x * 2, y * 2, currentZ + 1, maxZ, tileImagesToQuery, minY, maxY, minX, maxX);
-      this._getZoomedInTiles(x * 2 + 1, y * 2, currentZ + 1, maxZ, tileImagesToQuery, minY, maxY, minX, maxX);
-      this._getZoomedInTiles(x * 2, y * 2 + 1, currentZ + 1, maxZ, tileImagesToQuery, minY, maxY, minX, maxX);
-      return this._getZoomedInTiles(x * 2 + 1, y * 2 + 1, currentZ + 1, maxZ, tileImagesToQuery, minY, maxY, minX, maxX);
+      this._getZoomedInTiles(x * 2, y * 2, currentZ + 1, maxZ, tileImagesToQuery, minY, maxY, minX, maxX, tileLimit);
+      this._getZoomedInTiles(x * 2 + 1, y * 2, currentZ + 1, maxZ, tileImagesToQuery, minY, maxY, minX, maxX, tileLimit);
+      this._getZoomedInTiles(x * 2, y * 2 + 1, currentZ + 1, maxZ, tileImagesToQuery, minY, maxY, minX, maxX, tileLimit);
+      return this._getZoomedInTiles(x * 2 + 1, y * 2 + 1, currentZ + 1, maxZ, tileImagesToQuery, minY, maxY, minX, maxX, tileLimit);
     }
   };
 
-  OfflineLayer.prototype._getZoomedOutTiles = function(x, y, currentZ, finalZ, tileImagesToQuery, minY, maxY, minX, maxX) {
-    this._getTileImage(x, y, currentZ, tileImagesToQuery, minY, maxY, minX, maxX, false);
-    if (currentZ > finalZ) {
+  OfflineLayer.prototype._getZoomedOutTiles = function(x, y, currentZ, finalZ, tileImagesToQuery, minY, maxY, minX, maxX, tileLimit) {
+    this._getTileImage(x, y, currentZ, tileImagesToQuery, minY, maxY, minX, maxX, false, tileLimit);
+    if (currentZ > finalZ && !(tileLimit && tileLimit.remaining <= 0)) {
       minY /= 2;
       maxY /= 2;
       minX /= 2;
       maxX /= 2;
-      return this._getZoomedOutTiles(Math.floor(x / 2), Math.floor(y / 2), currentZ - 1, finalZ, tileImagesToQuery, minY, maxY, minX, maxX);
+      return this._getZoomedOutTiles(Math.floor(x / 2), Math.floor(y / 2), currentZ - 1, finalZ, tileImagesToQuery, minY, maxY, minX, maxX, tileLimit);
     }
   };
 
-  OfflineLayer.prototype._getTileImage = function(x, y, z, tileImagesToQuery, minY, maxY, minX, maxX) {
+  OfflineLayer.prototype._getTileImage = function(x, y, z, tileImagesToQuery, minY, maxY, minX, maxX, flag, tileLimit) {
     var key;
     if (x < Math.floor(minX) || x > Math.floor(maxX) || y < Math.floor(minY) || y > Math.floor(maxY)) {
       return;
     }
     key = this._createTileKey(x, y, z);
     if (!tileImagesToQuery[key]) {
-      return tileImagesToQuery[key] = {
+      tileImagesToQuery[key] = {
         key: key,
         x: x,
         y: y,
         z: z
       };
+      if (tileLimit) {
+        return tileLimit.remaining--;
+      }
     }
   };
 
